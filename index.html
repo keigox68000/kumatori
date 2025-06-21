@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>スネークゲーム</title>
+    <style>
+        body {
+            background-color: #000;
+            color: #0f0;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            flex-direction: column;
+            text-align: center;
+        }
+        canvas {
+            background-color: #051005;
+            border: 2px solid #0f0;
+            box-shadow: 0 0 15px #0f0, 0 0 25px #0f0, inset 0 0 10px #0a0;
+            transition: transform 0.05s ease-in-out;
+        }
+        .instructions {
+            margin-top: 20px;
+            font-size: 1.2em;
+            text-shadow: 0 0 5px #0f0;
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+    <div class="instructions">
+        <p>矢印キーで操作 | [Enter]キーでリスタート</p>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // お宝の画像を読み込むためのImageオブジェクトを作成
+        const treasureImage = new Image();
+        // CORSの問題を回避するためにcrossOriginプロパティを設定
+        treasureImage.crossOrigin = "Anonymous"; 
+        // 指定されたURLに画像を変更
+        const treasureImageUrl = "https://raw.githubusercontent.com/keigox68000/kumatori/refs/heads/main/kuma.jpg";
+        
+        let gameLoopId;
+        let lastFrameTime = 0;
+        let lastMoveTime = 0;
+
+        // 定数
+        const GRID_SIZE = 20;
+        const CANVAS_WIDTH = canvas.width;
+        const CANVAS_HEIGHT = canvas.height;
+        const INITIAL_SNAKE_LENGTH = 5;
+        const TREASURE_GROWTH = 5;
+        const INITIAL_SPEED_INTERVAL = 100;
+        const MIN_SPEED_INTERVAL = 40;
+        const SPEED_INCREASE_INTERVAL = 5000;
+        const INITIAL_TREASURE_SPAWN_INTERVAL = 5000;
+        const MIN_TREASURE_SPAWN_INTERVAL = 1500;
+        const TREASURE_SIZE = 3; // お宝のサイズ（グリッド単位）
+        const TREASURE_INITIAL_VALUE = 1000;
+        const TREASURE_MIN_VALUE = 10;
+        const TREASURE_DECAY_RATE = 10;
+
+        // ゲームの状態
+        let snake, treasures, score, gameOver, speedInterval, lastSpeedUpTime, lastTreasureSpawnTime, treasureSpawnInterval;
+        let particles = [];
+        let floatingScores = [];
+        let direction = { x: GRID_SIZE, y: 0 };
+        let nextDirection = { x: GRID_SIZE, y: 0 };
+
+
+        // 初期化関数
+        function init() {
+            snake = [];
+            const startX = Math.floor(CANVAS_WIDTH / 2 / GRID_SIZE) * GRID_SIZE;
+            const startY = Math.floor(CANVAS_HEIGHT / 2 / GRID_SIZE) * GRID_SIZE;
+
+            for (let i = 0; i < INITIAL_SNAKE_LENGTH; i++) {
+                snake.push({ x: startX - i * GRID_SIZE, y: startY });
+            }
+
+            treasures = [];
+            particles = [];
+            floatingScores = [];
+            direction = { x: GRID_SIZE, y: 0 };
+            nextDirection = { x: GRID_SIZE, y: 0 };
+            
+            spawnTreasure();
+            
+            score = 0;
+            gameOver = false;
+            speedInterval = INITIAL_SPEED_INTERVAL;
+            treasureSpawnInterval = INITIAL_TREASURE_SPAWN_INTERVAL;
+            lastSpeedUpTime = 0;
+            lastTreasureSpawnTime = 0;
+
+            if(gameLoopId) cancelAnimationFrame(gameLoopId);
+            lastFrameTime = 0;
+            lastMoveTime = 0;
+            gameLoopId = requestAnimationFrame(gameLoop);
+        }
+
+        // --- パーティクル関連 ---
+        function createParticles(x, y, count, colorFunc, power = 1) {
+            for (let i = 0; i < count; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const velocity = Math.random() * 4 * power;
+                particles.push({
+                    x: x,
+                    y: y,
+                    vx: Math.cos(angle) * velocity,
+                    vy: Math.sin(angle) * velocity,
+                    life: 60 + Math.random() * 60,
+                    color: colorFunc()
+                });
+            }
+        }
+        
+        function rainbowColor() {
+            const hue = Math.random() * 360;
+            return `hsl(${hue}, 100%, 70%)`;
+        }
+
+        function updateParticles() {
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const p = particles[i];
+                p.x += p.vx;
+                p.y += p.vy;
+                p.vy += 0.05;
+                p.life--;
+                if (p.life <= 0) {
+                    particles.splice(i, 1);
+                }
+            }
+        }
+
+        function drawParticles() {
+            particles.forEach(p => {
+                ctx.fillStyle = p.color;
+                ctx.globalAlpha = Math.max(0, p.life / 100);
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, Math.max(0, p.life / 15), 0, Math.PI * 2);
+                ctx.fill();
+            });
+            ctx.globalAlpha = 1;
+        }
+
+        // --- フローティングスコア関連 ---
+        function createFloatingScore(x, y, text, value) {
+            floatingScores.push({
+                x, y, text, life: 80, alpha: 1, size: 24 + value / 50
+            });
+        }
+        
+        function updateFloatingScores() {
+             for (let i = floatingScores.length - 1; i >= 0; i--) {
+                const fs = floatingScores[i];
+                fs.y -= 0.8;
+                fs.life--;
+                fs.alpha = fs.life / 80;
+                if (fs.life <= 0) {
+                    floatingScores.splice(i, 1);
+                }
+            }
+        }
+
+        function drawFloatingScores() {
+            floatingScores.forEach(fs => {
+                ctx.fillStyle = `rgba(255, 255, 100, ${fs.alpha})`;
+                ctx.font = `bold ${fs.size}px "Courier New", Courier, monospace`;
+                ctx.textAlign = 'center';
+                ctx.fillText(fs.text, fs.x, fs.y);
+            });
+        }
+        
+        // --- 宝物関連 ---
+        function spawnTreasure() {
+            const treasureX = Math.floor(Math.random() * (CANVAS_WIDTH / GRID_SIZE - (TREASURE_SIZE - 1))) * GRID_SIZE;
+            const treasureY = Math.floor(Math.random() * (CANVAS_HEIGHT / GRID_SIZE - (TREASURE_SIZE - 1))) * GRID_SIZE;
+            treasures.push({ x: treasureX, y: treasureY, value: TREASURE_INITIAL_VALUE });
+        }
+
+        function isUnderTreasure(point) {
+            for (const treasure of treasures) {
+                if (point.x >= treasure.x && point.x < treasure.x + TREASURE_SIZE * GRID_SIZE &&
+                    point.y >= treasure.y && point.y < treasure.y + TREASURE_SIZE * GRID_SIZE) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        
+        // --- 描画関数 ---
+        function draw() {
+            ctx.fillStyle = 'rgba(0, 5, 0, 0.3)';
+            ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+            
+            drawParticles();
+
+            ctx.shadowColor = '#0f0';
+            ctx.shadowBlur = 10;
+            
+            ctx.fillStyle = '#0f0';
+            snake.forEach(segment => {
+                if (!isUnderTreasure(segment)) {
+                    ctx.fillRect(segment.x, segment.y, GRID_SIZE, GRID_SIZE);
+                    ctx.strokeStyle = '#050';
+                    ctx.strokeRect(segment.x, segment.y, GRID_SIZE, GRID_SIZE);
+                }
+            });
+
+            ctx.shadowColor = '#ff0';
+            ctx.shadowBlur = 15;
+            treasures.forEach(treasure => {
+                const valueRatio = (treasure.value - TREASURE_MIN_VALUE) / (TREASURE_INITIAL_VALUE - TREASURE_MIN_VALUE);
+                const brightness = 20 + 80 * valueRatio; 
+                ctx.filter = `brightness(${brightness}%)`;
+                ctx.drawImage(
+                    treasureImage, 
+                    treasure.x, 
+                    treasure.y, 
+                    TREASURE_SIZE * GRID_SIZE, 
+                    TREASURE_SIZE * GRID_SIZE
+                );
+                ctx.filter = 'none';
+            });
+
+            ctx.shadowBlur = 0;
+            drawFloatingScores();
+
+            ctx.fillStyle = '#0f0';
+            ctx.font = '24px "Courier New", Courier, monospace';
+            ctx.textAlign = 'left';
+            ctx.fillText('SCORE: ' + score, 10, 30);
+            
+            if (gameOver) {
+                ctx.fillStyle = '#f00';
+                ctx.shadowColor = '#f00';
+                ctx.shadowBlur = 15;
+                ctx.font = '60px "Courier New", Courier, monospace';
+                ctx.textAlign = 'center';
+                ctx.fillText('GAME OVER', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2);
+                ctx.shadowBlur = 0;
+            }
+        }
+        
+        // --- 更新関数 ---
+        function update(currentTime) {
+            if (gameOver) return;
+            
+            updateParticles();
+            updateFloatingScores();
+
+            if(!lastTreasureSpawnTime) lastTreasureSpawnTime = currentTime;
+            if(!lastSpeedUpTime) lastSpeedUpTime = currentTime;
+
+            if (currentTime - lastSpeedUpTime > SPEED_INCREASE_INTERVAL) {
+                if (speedInterval > MIN_SPEED_INTERVAL) {
+                    speedInterval -= 5;
+                }
+                if (treasureSpawnInterval > MIN_TREASURE_SPAWN_INTERVAL) {
+                    treasureSpawnInterval -= 250;
+                }
+                lastSpeedUpTime = currentTime;
+            }
+            
+            if (currentTime - lastTreasureSpawnTime > treasureSpawnInterval) {
+                spawnTreasure();
+                lastTreasureSpawnTime = currentTime;
+            }
+            
+            if (currentTime - lastMoveTime < speedInterval) {
+                 return;
+            }
+            lastMoveTime = currentTime;
+            
+            treasures.forEach(t => {
+                if (t.value > TREASURE_MIN_VALUE) {
+                    t.value = Math.max(TREASURE_MIN_VALUE, t.value - TREASURE_DECAY_RATE);
+                }
+            });
+
+            direction = nextDirection;
+            const head = { x: snake[0].x + direction.x, y: snake[0].y + direction.y };
+
+            if (head.x >= CANVAS_WIDTH) head.x = 0;
+            if (head.x < 0) head.x = CANVAS_WIDTH - GRID_SIZE;
+            if (head.y >= CANVAS_HEIGHT) head.y = 0;
+            if (head.y < 0) head.y = CANVAS_HEIGHT - GRID_SIZE;
+            
+            createParticles(head.x + GRID_SIZE / 2, head.y + GRID_SIZE / 2, 7, rainbowColor);
+
+            for (let i = 1; i < snake.length; i++) {
+                if (head.x === snake[i].x && head.y === snake[i].y) {
+                    if (!isUnderTreasure(snake[i])) {
+                        gameOver = true;
+                        return;
+                    }
+                }
+            }
+
+            snake.unshift(head);
+
+            let treasureEaten = false;
+            for (let i = treasures.length - 1; i >= 0; i--) {
+                const t = treasures[i];
+                if (head.x >= t.x && head.x < t.x + TREASURE_SIZE * GRID_SIZE &&
+                    head.y >= t.y && head.y < t.y + TREASURE_SIZE * GRID_SIZE) {
+                    const earnedScore = Math.floor(t.value);
+                    score += earnedScore;
+                    
+                    const particleCount = 20 + Math.floor(earnedScore / 5);
+                    const particlePower = 1 + earnedScore / 1000;
+                    createParticles(t.x + (TREASURE_SIZE*GRID_SIZE)/2, t.y + (TREASURE_SIZE*GRID_SIZE)/2, particleCount, rainbowColor, particlePower);
+                    
+                    createFloatingScore(t.x + (TREASURE_SIZE*GRID_SIZE)/2, t.y + (TREASURE_SIZE*GRID_SIZE)/2, `+${earnedScore}`, earnedScore);
+                    
+                    if(earnedScore === TREASURE_INITIAL_VALUE) {
+                        canvas.style.transform = 'scale(1.02)';
+                        setTimeout(()=> canvas.style.transform = 'scale(1)', 100);
+                    }
+
+                    treasures.splice(i, 1);
+
+                    // FIX: ヘビが正しく成長するように修正
+                    for (let j = 0; j < TREASURE_GROWTH; j++) {
+                        snake.push({ ...snake[snake.length - 1] });
+                    }
+
+                    treasureEaten = true;
+                    // FIX: 新しいお宝をすぐに生成
+                    spawnTreasure();
+                    break; 
+                }
+            }
+            
+            if (!treasureEaten) {
+                snake.pop();
+            }
+        }
+
+        // --- ゲームループ ---
+        const targetFPS = 60;
+        const frameInterval = 1000 / targetFPS;
+
+        function gameLoop(currentTime) {
+            gameLoopId = requestAnimationFrame(gameLoop);
+            const deltaTime = currentTime - lastFrameTime;
+
+            if (deltaTime < frameInterval) {
+                return;
+            }
+            lastFrameTime = currentTime - (deltaTime % frameInterval);
+            
+            update(currentTime);
+            draw();
+        }
+
+        // --- キー入力処理 ---
+        document.addEventListener('keydown', e => {
+            switch (e.key) {
+                case 'ArrowUp':
+                    if (direction.y === 0) nextDirection = { x: 0, y: -GRID_SIZE };
+                    break;
+                case 'ArrowDown':
+                    if (direction.y === 0) nextDirection = { x: 0, y: GRID_SIZE };
+                    break;
+                case 'ArrowLeft':
+                    if (direction.x === 0) nextDirection = { x: -GRID_SIZE, y: 0 };
+                    break;
+                case 'ArrowRight':
+                    if (direction.x === 0) nextDirection = { x: GRID_SIZE, y: 0 };
+                    break;
+                case 'Enter':
+                    if (gameOver) {
+                        init();
+                    }
+                    break;
+            }
+        });
+
+        // --- ゲーム開始 ---
+        treasureImage.onload = () => {
+            init();
+        };
+        // 画像読み込みエラー時の処理
+        treasureImage.onerror = () => {
+            console.error("画像の読み込みに失敗しました。URLを確認してください。");
+            // エラー時でもゲームが開始できるように、init()を呼び出す
+            init(); 
+        }
+        treasureImage.src = treasureImageUrl;
+
+    </script>
+</body>
+</html>
